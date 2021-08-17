@@ -1,0 +1,141 @@
+suppressPackageStartupMessages(library(tidyverse))
+library(lm.beta)
+library(ggplot2)
+library(olsrr)
+codebook <- read.csv("BRFSS2015.csv")
+
+<!-- Data is from https://www.kaggle.com/cdc/behavioral-risk-factor-surveillance-system. The codebook guide is necessary to understand the code. -->
+
+<!-- QUESTION 1:  Q1 assigned to amount of people who have any kind of health care coverage. -->
+select(codebook, HLTHPLN1) %>%
+filter(HLTHPLN1 == 1) %>%
+nrow() -> Q1
+
+<!-- QUESTION 2: Q2 is assigned to the average "Number of Mental Health Days Not Good". -->
+select(codebook, MENTHLTH) %>%
+filter(MENTHLTH != 77, MENTHLTH != 99) -> drop88
+drop88$MENTHLTH[drop88$MENTHLTH == 88] <- 0
+na.omit(drop88) -> dropna88
+round(mean(dropna88$MENTHLTH), digits = 2) -> Q2
+
+<!-- QUESTION 3: Q3 calculates mean and standard deviation of weight grouped by whether or not an individual has been diagnosed with some form of arthritis. -->
+select(codebook, HAVARTH3, WTKG3) %>%
+filter(HAVARTH3 == 1 | HAVARTH3 == 2) %>%
+filter(WTKG3 != 99999) %>%
+mutate(aslb = (WTKG3/100)*2.20462) -> dfq3
+group_by(dfq3, HAVARTH3) %>%
+summarise_at(vars(aslb), list(name = mean)) %>%
+as.data.frame() -> meanwtdf
+colnames(meanwtdf)[2] <- "mean_weight"
+group_by(dfq3, HAVARTH3) %>%
+summarise_at(vars(aslb), list(name = sd)) %>%
+as.data.frame() -> sdwtdf
+colnames(sdwtdf)[2] <- "sd_weight"
+c(meanwtdf[1], meanwtdf[2], sdwtdf[2]) %>%
+as.data.frame() %>%
+round(digits = 2) -> Q3
+
+
+<!-- QUESTION 4: Q4 entails removing outliers and assigning Q4 to the percentage of observations that remain. -->
+Q4_upper <- quantile(codebook$PA1MIN_, .997, na.rm = TRUE)
+Q4_lower <- quantile(codebook$PA1MIN_, .003, na.rm = TRUE)
+Q4_out <- which(codebook$PA1MIN_ > Q4_upper | codebook$PA1MIN_ < Q4_lower)
+Q4 <- round((nrow(codebook) - length(Q4_out))/nrow(codebook)*100, digits = 2)
+
+<!-- QUESTION 5: Q5 is assigned to the mean, standard deviation, minimum, and maximum of total exercise grouped by marital status.-->
+codebook_noout <- codebook[-Q4_out]
+select(codebook_noout, MARITAL, PA1MIN_) %>%
+na.omit() %>%
+group_by(MARITAL) -> notebookQ5
+summarize(notebookQ5, mean = mean(PA1MIN_)) -> meanQ5
+summarize(notebookQ5, sd = sd(PA1MIN_)) -> sdQ5
+summarize(notebookQ5, minimum = min(PA1MIN_)) -> minQ5
+summarize(notebookQ5, maximum = max(PA1MIN_)) -> maxQ5
+c(meanQ5[1], meanQ5[2], sdQ5[2], minQ5[2], maxQ5[2]) %>%
+as.data.frame() %>%
+round(digits = 2) -> Q5
+
+<!-- QUESTION 6 Q6 entails creating a boxplot for total exercise grouped by marital status.: -->
+ggplot(codebook_noout)+ geom_boxplot(aes(group = MARITAL, PA1MIN_)) -> Q6
+
+<!-- QUESTION 7 Q7 entails running a regression predicting exercise by marital status.: -->
+select(codebook_noout, MARITAL, PA1MIN_) %>%
+filter(MARITAL != 9) %>%
+na.omit() -> Q7T1
+modelQ7 <- lm(PA1MIN_ ~ MARITAL, Q7T1)
+summary(modelQ7) -> Q7
+
+<!-- QUESTION 8 is assigned to running an ANOVA comparing exercise across marital status and running a Tukey Test. -->
+res.aov <- aov(PA1MIN_ ~ as.factor(MARITAL), data = Q7T1)
+TukeyHSD(res.aov) -> Q8
+
+<!-- QUESTION 9 adds total fruits consumed per day to the model in Question 7 and assigning the better AIC value to Q9. -->
+select(codebook_noout, MARITAL, PA1MIN_, X_FRUTSUM) %>%
+filter(MARITAL != 9) %>%
+na.omit() -> Q9T1
+modelQ9 <- lm(PA1MIN_ ~ MARITAL + X_FRUTSUM, Q9T1)
+AIC(modelQ9) -> Q9
+
+<!-- QUESTIONS 10 AND 11 removes outliers from the variables ADDEPEV2, RENTHOM1, AVEDRNK2, AND PHYSHLTH(Diagnosed with depression, whether you rent or own your home, how many drinks you drinks in an average month, and how many days your physical health was bad, respectively)-->
+
+codebook %>%
+filter(ADDEPEV2 != 7, ADDEPEV2 != 9, RENTHOM1 != 3, RENTHOM1 != 7, RENTHOM1 != 9, AVEDRNK2 != 77, AVEDRNK2 != 99, PHYSHLTH != 77, PHYSHLTH != 99) %>%
+mutate(PHYSHLTH2 = ifelse(PHYSHLTH == 88, 0, PHYSHLTH)) -> Q10T1
+physhlth2_upper <- quantile(Q10T1$PHYSHLTH2, .997, na.rm = TRUE)
+physhlth2_lower <- quantile(Q10T1$PHYSHLTH2, .003, na.rm = TRUE)
+avedrnk_upper <- quantile(Q10T1$AVEDRNK2, .997, na.rm = TRUE)
+avedrnk_lower <- quantile(Q10T1$AVEDRNK2, .003, na.rm = TRUE)
+filter(Q10T1, AVEDRNK2 <= avedrnk_upper, AVEDRNK2 >= avedrnk_lower) %>%
+select(PHYSHLTH2, AVEDRNK2, ADDEPEV2, RENTHOM1) %>%
+na.omit() -> Q10Q11
+
+
+<!-- QUESTION 10: I looked to remove the outliers from the discrete variables PHYSHLTH2(mutated PHYSHLTH variable to PHYSHLTH2 to change 88 (corresponding to no exercise) to 0) and AVEDRNK2. It turned out that there was no data outside of 3 SDs from the mean for PHYSHLTH2, but I filtered AVEDRNK2 by 3 SD from the mean and omitted NAs.  -->
+
+<!-- QUESTION 11: -->
+
+<!-- For RENTHOM1, 1 is assigned to own and 2 is assigned to rent. I removed Other arrangement, don't know/not sure, and refused. I did this so that the categorical variables can be binary which allows me to skip over mutating the variables and making new columns for each, and because those data are not interesting and theoretically should not be significant predictors(in my mind) since they are very general. -->
+
+<!-- For ADDEPEV2, I did essentially the same thing, and 1 is assigned to yes and 2 is assigned to no.  -->
+
+<!-- For PHYSHLTH, 88 is assigned to none. A new column has been generated such that the value corresponding to none is 0. I also removed Don't know/not sure and refused.  -->
+
+<!-- For AVEDRNK2, 77 is assigned to don't know/not sure, and 99 is assigned to refused. These variables have been filtered out as well. -->
+
+<!-- QUESTION 12 is exploratory analyses using ggplot2.-->
+
+filtereddf <- Q10Q11
+filtereddf[sample(nrow(filtereddf), 1000), ] -> sampledfQ12
+ggplot(sampledfQ12)+ geom_boxplot(aes(group = ADDEPEV2, AVEDRNK2)) -> drinkvsdepress
+drinkvshealth + facet_wrap(~ ADDEPEV2) -> drinkvshealthbydepress
+ggplot(sampledfQ12)+ geom_bar(aes(AVEDRNK2)) + facet_wrap(~ ADDEPEV2) -> drinkvshealth
+ggplot(sampledfQ12)+ geom_bar(aes(AVEDRNK2)) + facet_wrap(~ RENTHOM1) -> drinkvshome
+
+<!-- QUESTION 13 Running basic summary statistics: -->
+
+sapply(filtereddf, mean, na.rm = TRUE)
+<!-- Does not really apply to ADDEPEV2 and RENTHOM1, but lets us know which is more heavily weighted. mean of ADDEPEV2 is ~ 1.83, so we know the majority of responses are categorized as 2, which corresponds to no depressive disorder diagnosis -->
+sapply(filtereddf, sd, na.rm = TRUE)
+<!-- No application for categorical variables. -->
+sapply(filtereddf, range, na.rm = TRUE)
+sapply(filtereddf, median, na.rm = TRUE)
+
+table(filtereddf$ADDEPEV2)
+table(filtereddf$RENTHOM1)
+table(filtereddf$ADDEPEV2, filtereddf$RENTHOM1)
+<!-- Rows are ADDEPEV2, columns are RENTHOM1. 1 refers to yes and own, respectively. Table counts each value, and counts grouped values as well. -->
+
+<!-- QUESTION 14 is choosing the best model to predict PHYSHLTH2.-->
+
+overallmodel <- lm(PHYSHLTH2 ~ ADDEPEV2 + RENTHOM1 + AVEDRNK2, filtereddf)
+allmodel <- ols_step_all_possible(overallmodel)
+depress <- lm(PHYSHLTH2 ~ ADDEPEV2, filtereddf)
+depressandhome <- lm(PHYSHLTH2 ~ ADDEPEV2 + RENTHOM1, filtereddf)
+depressanddrink <- lm(PHYSHLTH2 ~ ADDEPEV2 + AVEDRNK2, filtereddf)
+depressdrinkandhome <- overallmodel
+AIC(depress, depressandhome, depressanddrink, depressdrinkandhome) -> AICCOMPARE
+Q14 <- overallmodel
+<!-- I decided to go with the overall model. It had the lowest AIC (not by much), the most fitting Mallow's CP by far, and similar R^2 as the other variables even though it adds another predictor(which usually makes R^2 go up). None of these models are particularly good in my opinion, which was suprising to me. The model is statistically significant. I expected average drinks to correlate highly in magnitude with physhealth2. -->
+
+
+
